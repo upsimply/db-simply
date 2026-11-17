@@ -137,15 +137,18 @@ final class Export
      */
     public function csvTable(string $database, string $table, string $where = ''): void
     {
+        $mysql = ! $this->client->isPostgres();
         $columns = array_map(
-            static fn (array $column): string => $column['dataType'] === 'bit' ? Identifier::quote($column['name']).' + 0 AS '.Identifier::quote($column['name']) : Identifier::quote($column['name']),
+            fn (array $column): string => $mysql && $column['dataType'] === 'bit'
+                ? $this->client->identifier($column['name']).' + 0 AS '.$this->client->identifier($column['name'])
+                : $this->client->identifier($column['name']),
             $this->catalog->columns($database, $table),
         );
 
         $this->csv(sprintf(
             'SELECT %s FROM %s%s',
             implode(', ', $columns),
-            Identifier::qualified($database, $table),
+            $this->client->qualified($database, $table),
             $where === '' ? '' : ' WHERE '.$where,
         ));
     }
@@ -155,7 +158,7 @@ final class Export
      */
     public function csvQuery(?string $database, string $sql): void
     {
-        $statements = Splitter::split($sql);
+        $statements = $this->client->split($sql);
 
         if (count($statements) !== 1) {
             throw new UserError('Export one statement at a time.');
@@ -174,26 +177,21 @@ final class Export
 
     private function csv(string $sql): void
     {
-        $result = $this->unbuffered($sql);
-
-        if (! $result instanceof mysqli_result) {
-            throw new UserError('That statement returns no rows to export.');
-        }
-
-        $this->write(self::csvLine(array_map(static fn (object $field): string => (string) $field->name, $result->fetch_fields()), $this->escapeFormulas));
-
         $buffer = '';
 
-        while (($row = $result->fetch_row()) !== null && $row !== false) {
-            $buffer .= self::csvLine($row, $this->escapeFormulas);
+        $this->client->stream(
+            $sql,
+            fn (array $names) => $this->write(self::csvLine($names, $this->escapeFormulas)),
+            function (array $row) use (&$buffer): void {
+                $buffer .= self::csvLine($row, $this->escapeFormulas);
 
-            if (strlen($buffer) >= 65536) {
-                $this->write($buffer);
-                $buffer = '';
-            }
-        }
+                if (strlen($buffer) >= 65536) {
+                    $this->write($buffer);
+                    $buffer = '';
+                }
+            },
+        );
 
-        $result->free();
         $this->write($buffer);
     }
 

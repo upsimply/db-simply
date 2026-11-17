@@ -4,26 +4,94 @@ declare(strict_types=1);
 
 namespace DbSimply;
 
+use Closure;
 use mysqli;
-use mysqli_result;
-use mysqli_sql_exception;
 
 /**
- * A thin layer over mysqli for the queries the app builds itself.
+ * A connection to the database server, for the queries the app builds itself.
  *
- * Statements a user types run through {@see Console}, which works with the
- * connection directly. Everything here quotes what it is given, and turns a
- * server error into one the user can read.
+ * Two drivers stand behind it: {@see MysqlClient} for MariaDB and MySQL, and
+ * {@see PgsqlClient} for PostgreSQL. Everything that differs between the two
+ * SQL dialects in what the browsing, editing and console code builds -- how a
+ * name is quoted, how a value is cut for a preview, how a search ignores case
+ * -- is asked of the client, so that code is written once for both.
+ *
+ * Everything here quotes what it is given, and turns a server error into one
+ * the user can read.
  */
-final class Client
+abstract class Client
 {
-    private ?string $version = null;
+    public const string MYSQL = 'mysql';
 
-    public function __construct(private readonly mysqli $mysqli) {}
+    public const string PGSQL = 'pgsql';
 
-    public function mysqli(): mysqli
+    /**
+     * The driver behind the connection: {@see self::MYSQL} or {@see self::PGSQL}.
+     */
+    abstract public function driver(): string;
+
+    /**
+     * Run a query and return its rows, as name => value or as lists of values.
+     *
+     * @return list<array<string, ?string>>|list<list<?string>>
+     */
+    abstract protected function fetch(string $sql, bool $associative): array;
+
+    /**
+     * Run a statement that returns no rows, and return how many rows it changed.
+     */
+    abstract public function statement(string $sql): int;
+
+    /**
+     * The value the last INSERT generated for an auto-increment column, if any.
+     */
+    abstract public function insertId(): ?string;
+
+    /**
+     * Quote a value as a string literal.
+     */
+    abstract public function quote(?string $value): string;
+
+    /**
+     * Quote a name.
+     */
+    abstract public function identifier(string $name): string;
+
+    /**
+     * Quote a table in a database. On PostgreSQL the connection is to one
+     * database already, so the name is qualified by its schema instead.
+     */
+    abstract public function qualified(string $database, string $name): string;
+
+    /**
+     * Make the given database the one statements run in.
+     */
+    abstract public function useDatabase(string $database): void;
+
+    /**
+     * The server's version string, e.g. "10.11.6-MariaDB-0+deb12u1" or "18.1".
+     */
+    abstract public function version(): string;
+
+    /**
+     * Run a SELECT and hand its rows to the callbacks one at a time, without
+     * holding the whole result in memory.
+     *
+     * @param  Closure(list<string>): void  $columns  called once with the column names
+     * @param  Closure(list<?string>): void  $row  called for every row
+     */
+    abstract public function stream(string $sql, Closure $columns, Closure $row): void;
+
+    abstract public function close(): void;
+
+    /**
+     * Split SQL text into statements, by the rules of this server's SQL.
+     *
+     * @return list<Sql\Statement>
+     */
+    public function split(string $sql): array
     {
-        return $this->mysqli;
+        return Sql\Splitter::split($sql);
     }
 
     /**
@@ -33,16 +101,8 @@ final class Client
      */
     public function select(string $sql): array
     {
-        $result = $this->query($sql);
-
-        if (! $result instanceof mysqli_result) {
-            return [];
-        }
-
-        $rows = $result->fetch_all(MYSQLI_ASSOC);
-        $result->free();
-
-        return $rows;
+        /** @var list<array<string, ?string>> */
+        return $this->fetch($sql, true);
     }
 
     /**
@@ -52,16 +112,8 @@ final class Client
      */
     public function selectRows(string $sql): array
     {
-        $result = $this->query($sql);
-
-        if (! $result instanceof mysqli_result) {
-            return [];
-        }
-
-        $rows = $result->fetch_all(MYSQLI_NUM);
-        $result->free();
-
-        return $rows;
+        /** @var list<list<?string>> */
+        return $this->fetch($sql, false);
     }
 
     /**
@@ -74,55 +126,113 @@ final class Client
         return $rows[0][0] ?? null;
     }
 
-    public function query(string $sql): mysqli_result|bool
-    {
-        try {
-            return $this->mysqli->query($sql);
-        } catch (mysqli_sql_exception $e) {
-            throw new UserError($e->getMessage());
-        }
-    }
-
     /**
-     * Quote a value as a string literal.
-     */
-    public function quote(?string $value): string
-    {
-        return $value === null ? 'NULL' : "'".$this->mysqli->real_escape_string($value)."'";
-    }
-
-    /**
-     * Quote a value for a LIKE pattern, escaping its wildcards.
+     * Quote a value for a LIKE pattern, escaping its wildcards. Both servers
+     * take a backslash as LIKE's escape character by default.
      */
     public function quoteLike(string $value, string $before = '', string $after = ''): string
     {
         return $this->quote($before.addcslashes($value, '\\%_').$after);
     }
 
-    public function useDatabase(string $database): void
+    public function isMariaDb(): bool
     {
-        try {
-            $this->mysqli->select_db($database);
-        } catch (mysqli_sql_exception $e) {
-            throw new UserError($e->getMessage());
-        }
+        return false;
+    }
+
+    public function isPostgres(): bool
+    {
+        return $this->driver() === self::PGSQL;
     }
 
     /**
-     * The server's version string, e.g. "10.11.6-MariaDB-0+deb12u1".
+     * The engine for display and for the browser: "mariadb", "mysql" or "postgres".
      */
-    public function version(): string
+    public function engine(): string
     {
-        return $this->version ??= (string) $this->value('SELECT VERSION()');
+        return match (true) {
+            $this->isPostgres() => 'postgres',
+            $this->isMariaDb() => 'mariadb',
+            default => 'mysql',
+        };
     }
 
-    public function isMariaDb(): bool
+    /**
+     * The server's name for messages.
+     */
+    public function label(): string
     {
-        return stripos($this->version(), 'mariadb') !== false;
+        return match ($this->engine()) {
+            'postgres' => 'PostgreSQL',
+            'mariadb' => 'MariaDB',
+            default => 'MySQL',
+        };
     }
 
-    public function close(): void
+    /**
+     * A column as text, for matching it against a pattern.
+     */
+    public function asText(string $quotedColumn): string
     {
-        $this->mysqli->close();
+        return $quotedColumn;
+    }
+
+    /**
+     * The operator that matches a pattern regardless of case. MariaDB and
+     * MySQL compare text case-insensitively under their usual collations.
+     */
+    public function likeOperator(bool $negated = false): string
+    {
+        return $negated ? 'NOT LIKE' : 'LIKE';
+    }
+
+    /**
+     * An expression reading at most the first $length bytes of a column.
+     */
+    public function previewExpression(string $quotedColumn, int $length, string $dataType): string
+    {
+        return sprintf('LEFT(%s, %d)', $quotedColumn, $length);
+    }
+
+    /**
+     * An expression giving a column's full length in bytes.
+     */
+    public function lengthExpression(string $quotedColumn, string $dataType): string
+    {
+        return sprintf('OCTET_LENGTH(%s)', $quotedColumn);
+    }
+
+    /**
+     * What follows an UPDATE or DELETE that must touch one row at most.
+     */
+    public function limitOne(): string
+    {
+        return ' LIMIT 1';
+    }
+
+    /**
+     * An INSERT of a row made entirely of column defaults.
+     */
+    public function insertDefaults(string $qualifiedTable): string
+    {
+        return sprintf('INSERT INTO %s () VALUES ()', $qualifiedTable);
+    }
+
+    /**
+     * The mysqli connection, for the MariaDB and MySQL features that use it
+     * directly. Those features are not offered on PostgreSQL; this is the
+     * backstop should one be reached anyway.
+     */
+    public function mysqli(): mysqli
+    {
+        throw new UserError('This is not available on '.$this->label().'.', 400);
+    }
+
+    /**
+     * Run a statement on the mysqli connection; see {@see self::mysqli()}.
+     */
+    public function query(string $sql): mixed
+    {
+        throw new UserError('This is not available on '.$this->label().'.', 400);
     }
 }

@@ -64,7 +64,7 @@ final class RowKey
                 throw new UserError('The row reference is incomplete.');
             }
 
-            $conditions[] = Identifier::quote($name).' = '.$client->quote($value);
+            $conditions[] = $client->identifier($name).' = '.$client->quote($value);
         }
 
         return implode(' AND ', $conditions);

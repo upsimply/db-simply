@@ -23,6 +23,28 @@ final class Api
      */
     private const array WRITES = ['insert', 'update', 'delete', 'table', 'schema', 'drop-object', 'replace'];
 
+    /**
+     * Actions written for MariaDB and MySQL alone, and the feature each
+     * belongs to. On PostgreSQL they are refused here and hidden by the UI,
+     * which reads the same list from the session's `features`.
+     */
+    private const array MYSQL_ONLY = [
+        'table' => 'table-operations',
+        'design' => 'structure-editing',
+        'collations' => 'structure-editing',
+        'schema' => 'structure-editing',
+        'objects' => 'routines',
+        'definition' => 'routines',
+        'drop-object' => 'routines',
+        'replace-preview' => 'replace',
+        'replace' => 'replace',
+    ];
+
+    /**
+     * Everything the UI may offer, on MariaDB and MySQL.
+     */
+    public const array FEATURES = ['table-operations', 'structure-editing', 'routines', 'replace', 'sql-dump', 'import'];
+
     private ?Client $client = null;
 
     public function __construct(
@@ -67,6 +89,10 @@ final class Api
         $this->session->release();
 
         try {
+            if (isset(self::MYSQL_ONLY[$action]) && $this->client($grant)->isPostgres()) {
+                throw new UserError('This is not available on PostgreSQL yet.', 400);
+            }
+
             return $this->dispatch($grant, $action, $query, $body);
         } finally {
             $this->client?->close();
@@ -274,6 +300,9 @@ final class Api
             'server' => [
                 'version' => $client->version(),
                 'mariadb' => $client->isMariaDb(),
+                'engine' => $client->engine(),
+                'label' => $client->label(),
+                'features' => self::features($client),
             ],
             'limits' => [
                 'pageSize' => $this->config->int('limits.page_size'),
@@ -285,6 +314,18 @@ final class Api
                 'maxBytes' => $this->config->int('import.max_bytes'),
             ],
         ];
+    }
+
+    /**
+     * What the UI may offer on this server: everything on MariaDB and MySQL;
+     * on PostgreSQL, browsing, editing rows, the SQL console, search, CSV
+     * export and processes, which need no feature of their own.
+     *
+     * @return list<string>
+     */
+    public static function features(Client $client): array
+    {
+        return $client->isPostgres() ? [] : self::FEATURES;
     }
 
     /**

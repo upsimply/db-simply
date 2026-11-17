@@ -72,8 +72,14 @@ final class Config
     {
         return [
             'db' => [
+                // mysql (MariaDB and MySQL) or pgsql (PostgreSQL).
+                'driver' => 'mysql',
                 'host' => '127.0.0.1',
-                'port' => 3306,
+                // 0: the driver's own, 3306 or 5432.
+                'port' => 0,
+                // PostgreSQL only: the database a session starts in when the
+                // sign-on names none. Every connection is to one database.
+                'database' => null,
                 'socket' => null,
                 'timeout' => 5,
                 'read_timeout' => 300,

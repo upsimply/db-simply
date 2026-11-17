@@ -9,6 +9,7 @@ use DbSimply\Catalog;
 use DbSimply\Client;
 use DbSimply\Config;
 use DbSimply\Connection;
+use DbSimply\PgsqlClient;
 use RuntimeException;
 use Throwable;
 
@@ -129,6 +130,70 @@ abstract class TestCase
         }
 
         return $this->client;
+    }
+
+    /**
+     * The PostgreSQL test database's connection details, or a skip when none
+     * are configured. The MariaDB and MySQL tests read their own variables,
+     * so both servers can be tested in one run.
+     *
+     * @return array{host: string, port: int, user: string, password: string, database: string, other: string}
+     */
+    protected function pgTarget(): array
+    {
+        $host = getenv('DB_SIMPLY_TEST_PGSQL_HOST') ?: null;
+
+        if ($host === null || ! function_exists('pg_connect')) {
+            throw new Skipped('No PostgreSQL test database configured.');
+        }
+
+        return [
+            'host' => $host,
+            'port' => (int) (getenv('DB_SIMPLY_TEST_PGSQL_PORT') ?: 5432),
+            'user' => getenv('DB_SIMPLY_TEST_PGSQL_USER') ?: 'postgres',
+            'password' => getenv('DB_SIMPLY_TEST_PGSQL_PASSWORD') ?: '',
+            'database' => getenv('DB_SIMPLY_TEST_PGSQL_DATABASE') ?: 'dbsimply_test',
+            // A second database the same user owns, for moving between them.
+            'other' => getenv('DB_SIMPLY_TEST_PGSQL_OTHER_DATABASE') ?: 'dbsimply_other',
+        ];
+    }
+
+    /**
+     * A config pointing at the PostgreSQL test server.
+     *
+     * @param  array<string, mixed>  $overrides
+     */
+    protected function pgConfig(array $overrides = []): Config
+    {
+        $target = $this->pgTarget();
+
+        return Config::fromArray(dirname(__DIR__), array_replace_recursive([
+            'db' => ['driver' => 'pgsql', 'host' => $target['host'], 'port' => $target['port'], 'database' => $target['database']],
+        ], $overrides));
+    }
+
+    /**
+     * A PostgreSQL client on an emptied test database, with the given
+     * statements run in it.
+     */
+    protected function pgClient(string ...$statements): PgsqlClient
+    {
+        $target = $this->pgTarget();
+        $client = (new Connection($this->pgConfig()))->open(['user' => $target['user'], 'password' => $target['password']]);
+
+        if (! $client instanceof PgsqlClient) {
+            throw new AssertionFailed('Expected a PostgreSQL client.');
+        }
+
+        $this->client = $client;
+        $client->statement('DROP SCHEMA IF EXISTS public CASCADE');
+        $client->statement('CREATE SCHEMA public');
+
+        foreach ($statements as $statement) {
+            $client->statement($statement);
+        }
+
+        return $client;
     }
 
     protected function catalog(Client $client): Catalog

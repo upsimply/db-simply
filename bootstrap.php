@@ -10,7 +10,7 @@ if (PHP_VERSION_ID < 80300) {
     exit('DB Simply requires PHP 8.3 or newer.');
 }
 
-foreach (['mysqli' => 'mysqli', 'mbstring' => 'mbstring', 'session' => 'session', 'sodium' => 'sodium'] as $extension => $name) {
+foreach (['mbstring' => 'mbstring', 'session' => 'session', 'sodium' => 'sodium'] as $extension => $name) {
     if (! extension_loaded($extension)) {
         http_response_code(500);
         exit("DB Simply requires the {$name} extension.");
@@ -60,4 +60,15 @@ try {
     exit($e->getMessage());
 }
 
-return Config::load($home);
+$config = Config::load($home);
+
+// The driver's own extension: mysqli for MariaDB and MySQL, pgsql for
+// PostgreSQL. Only the one the configured server needs is required.
+$driverExtension = $config->get('db.driver') === 'pgsql' ? 'pgsql' : 'mysqli';
+
+if (! extension_loaded($driverExtension)) {
+    http_response_code(500);
+    exit("DB Simply requires the {$driverExtension} extension for this database server.");
+}
+
+return $config;

@@ -52,11 +52,11 @@ final class Search
             $searched++;
 
             // A table with no column the term could be in has nothing to count.
-            if ($where === '0') {
+            if ($where === Rows::NOTHING) {
                 continue;
             }
 
-            $matches = (int) $this->client->value(sprintf('SELECT COUNT(*) FROM %s WHERE %s', Identifier::qualified($database, $table['name']), $where));
+            $matches = (int) $this->client->value(sprintf('SELECT COUNT(*) FROM %s WHERE %s', $this->client->qualified($database, $table['name']), $where));
 
             if ($matches > 0) {
                 $results[] = ['table' => $table['name'], 'matches' => $matches];

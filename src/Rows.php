@@ -30,16 +30,26 @@ final class Rows
     private const array LONG_TYPES = [
         'tinytext', 'text', 'mediumtext', 'longtext', 'json',
         'tinyblob', 'blob', 'mediumblob', 'longblob',
+        // PostgreSQL
+        'jsonb', 'bytea', 'xml', 'array',
         'geometry', 'point', 'linestring', 'polygon', 'multipoint', 'multilinestring', 'multipolygon', 'geometrycollection',
     ];
 
     private const array TEXT_TYPES = [
         'char', 'varchar', 'tinytext', 'text', 'mediumtext', 'longtext', 'json', 'enum', 'set',
+        // PostgreSQL
+        'character', 'character varying', 'jsonb', 'uuid', 'citext', 'xml', 'name',
     ];
 
     private const array NUMERIC_TYPES = [
         'tinyint', 'smallint', 'mediumint', 'int', 'integer', 'bigint', 'decimal', 'numeric', 'float', 'double', 'real', 'year', 'bit',
+        'double precision',
     ];
+
+    /**
+     * The condition a search with no column to look in stands for.
+     */
+    public const string NOTHING = 'FALSE';
 
     public function __construct(
         private readonly Client $client,
@@ -77,13 +87,13 @@ final class Rows
         $order = [];
 
         if ($sort !== null) {
-            $order[] = Identifier::quote($sort).' '.$direction;
+            $order[] = $this->client->identifier($sort).' '.$direction;
         }
 
         // The row key breaks ties, so paging is stable.
         foreach ($key ?? [] as $name) {
             if ($name !== $sort) {
-                $order[] = Identifier::quote($name).($sort === null ? '' : ' '.$direction);
+                $order[] = $this->client->identifier($name).($sort === null ? '' : ' '.$direction);
             }
         }
 
@@ -91,12 +101,12 @@ final class Rows
         $long = [];
 
         foreach ($columns as $index => $column) {
-            $quoted = Identifier::quote($column['name']);
+            $quoted = $this->client->identifier($column['name']);
 
             if ($this->isLong($column)) {
                 $long[$index] = count($columns) + count($long);
-                $select[] = sprintf('LEFT(%s, %d)', $quoted, $this->cellPreview);
-            } elseif ($column['dataType'] === 'bit') {
+                $select[] = $this->client->previewExpression($quoted, $this->cellPreview, $column['dataType']);
+            } elseif ($column['dataType'] === 'bit' && ! $this->client->isPostgres()) {
                 // BIT values are bytes on the wire; as numbers they read and edit.
                 $select[] = $quoted.' + 0';
             } else {
@@ -105,10 +115,10 @@ final class Rows
         }
 
         foreach (array_keys($long) as $index) {
-            $select[] = sprintf('OCTET_LENGTH(%s)', Identifier::quote($columns[$index]['name']));
+            $select[] = $this->client->lengthExpression($this->client->identifier($columns[$index]['name']), $columns[$index]['dataType']);
         }
 
-        $from = Identifier::qualified($database, $table);
+        $from = $this->client->qualified($database, $table);
 
         // One row more than the page shows whether another page follows.
         $raw = $this->client->selectRows(sprintf(
@@ -174,12 +184,13 @@ final class Rows
 
         $where = RowKey::of($this->catalog, $database, $table)->where($this->client, $key);
 
-        $quoted = Identifier::quote($column);
+        $quoted = $this->client->identifier($column);
+        $dataType = $columns[$column]['dataType'];
         $rows = $this->client->selectRows(sprintf(
-            'SELECT LEFT(%1$s, %2$d), OCTET_LENGTH(%1$s) FROM %3$s WHERE %4$s LIMIT 2',
-            $quoted,
-            $this->valuePreview,
-            Identifier::qualified($database, $table),
+            'SELECT %s, %s FROM %s WHERE %s LIMIT 2',
+            $this->client->previewExpression($quoted, $this->valuePreview, $dataType),
+            $this->client->lengthExpression($quoted, $dataType),
+            $this->client->qualified($database, $table),
             $where,
         ));
 
@@ -234,14 +245,16 @@ final class Rows
             $matches = [];
 
             foreach ($columns as $column) {
+                $quoted = $this->client->identifier($column['name']);
+
                 if (in_array($column['dataType'], self::TEXT_TYPES, true)) {
-                    $matches[] = Identifier::quote($column['name']).' LIKE '.$this->client->quoteLike($search, '%', '%');
+                    $matches[] = $this->client->asText($quoted).' '.$this->client->likeOperator().' '.$this->client->quoteLike($search, '%', '%');
                 } elseif (is_numeric($search) && in_array($column['dataType'], self::NUMERIC_TYPES, true)) {
-                    $matches[] = Identifier::quote($column['name']).' = '.$this->client->quote($search);
+                    $matches[] = $quoted.' = '.$this->client->quote($search);
                 }
             }
 
-            $conditions[] = $matches === [] ? '0' : '('.implode(' OR ', $matches).')';
+            $conditions[] = $matches === [] ? self::NOTHING : '('.implode(' OR ', $matches).')';
         }
 
         return implode(' AND ', $conditions);
@@ -264,18 +277,24 @@ final class Rows
             throw new UserError('Unknown filter operator.');
         }
 
-        $column = Identifier::quote($name);
+        $column = $this->client->identifier($name);
         $raw = $filter['value'] ?? '';
         $value = is_scalar($raw) ? (string) $raw : '';
 
+        // Patterns match the column's text, so they work on any type, and
+        // ignore case the way MariaDB and MySQL usually do.
+        $text = $this->client->asText($column);
+        $like = ' '.$this->client->likeOperator().' ';
+        $notLike = ' '.$this->client->likeOperator(true).' ';
+
         return match ($operator) {
             '=', '!=', '<', '>', '<=', '>=' => sprintf('%s %s %s', $column, $operator, $this->client->quote($value)),
-            'contains' => $column.' LIKE '.$this->client->quoteLike($value, '%', '%'),
-            'not contains' => $column.' NOT LIKE '.$this->client->quoteLike($value, '%', '%'),
-            'starts with' => $column.' LIKE '.$this->client->quoteLike($value, '', '%'),
-            'ends with' => $column.' LIKE '.$this->client->quoteLike($value, '%'),
-            'like' => $column.' LIKE '.$this->client->quote($value),
-            'not like' => $column.' NOT LIKE '.$this->client->quote($value),
+            'contains' => $text.$like.$this->client->quoteLike($value, '%', '%'),
+            'not contains' => $text.$notLike.$this->client->quoteLike($value, '%', '%'),
+            'starts with' => $text.$like.$this->client->quoteLike($value, '', '%'),
+            'ends with' => $text.$like.$this->client->quoteLike($value, '%'),
+            'like' => $text.$like.$this->client->quote($value),
+            'not like' => $text.$notLike.$this->client->quote($value),
             'in', 'not in' => sprintf(
                 '%s %s (%s)',
                 $column,
@@ -284,8 +303,8 @@ final class Rows
             ),
             'is null' => $column.' IS NULL',
             'is not null' => $column.' IS NOT NULL',
-            'is empty' => sprintf("(%1\$s IS NULL OR %1\$s = '')", $column),
-            'is not empty' => sprintf("(%1\$s IS NOT NULL AND %1\$s <> '')", $column),
+            'is empty' => sprintf("(%s IS NULL OR %s = '')", $column, $text),
+            'is not empty' => sprintf("(%s IS NOT NULL AND %s <> '')", $column, $text),
         };
     }
 

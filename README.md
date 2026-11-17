@@ -1,6 +1,6 @@
 # DB Simply
 
-A small, self-hosted web UI for MariaDB and MySQL, built to sit next to a hosting control panel the way phpMyAdmin does: the panel signs the user in with a one-time link, and the session connects to the one server the app is configured for, as the one database user the link was issued for.
+A small, self-hosted web UI for MariaDB, MySQL and PostgreSQL, built to sit next to a hosting control panel the way phpMyAdmin does: the panel signs the user in with a one-time link, and the session connects to the one server the app is configured for, as the one database user the link was issued for.
 
 - Databases and tables with row counts, sizes, engine, collation and overhead
 - Browse any table page by page: sort by any column, filter with conditions, search every text column; long and binary values are shown safely, and opened in full on click
@@ -17,12 +17,18 @@ A small, self-hosted web UI for MariaDB and MySQL, built to sit next to a hostin
 - Import `.sql` and `.sql.gz` files of any size: uploaded in chunks, run in slices of a few seconds each, and resumable past a failed statement
 - Read-only sessions, for support access
 - The URL records the database, table, tab, page, sort and filters, so a reload lands on the same view and every tab can work in a database of its own
-- No build step, no runtime dependencies: plain PHP 8.3+, mysqli, and a vendored copy of Alpine.js
+- No build step, no runtime dependencies: plain PHP 8.3+, mysqli or pgsql, and a vendored copy of Alpine.js
+
+### PostgreSQL
+
+On PostgreSQL, DB Simply covers the everyday work: databases and the tables of their current schema (`public`, unless the role's `search_path` says otherwise), browsing, sorting, filtering and searching rows, editing, inserting and deleting them by key, the structure read-only (columns, indexes, foreign keys, triggers and a rebuilt `CREATE` statement), the SQL console (dollar-quoted function bodies included; a `SELECT` is read through a cursor so only the rows shown are fetched), searching a whole database, CSV export, and your own running queries.
+
+Not yet on PostgreSQL, and hidden there: changing the structure, SQL dumps and imports (use `pg_dump` and `psql`/`pg_restore`), find and replace, functions and triggers as objects, and table maintenance.
 
 ## Requirements
 
-- PHP 8.3 or newer with the `mysqli`, `mbstring`, `session` and `sodium` extensions
-- MariaDB 10.6+ or MySQL 8.0+
+- PHP 8.3 or newer with the `mbstring`, `session` and `sodium` extensions, and `mysqli` for MariaDB and MySQL or `pgsql` for PostgreSQL
+- MariaDB 10.6+, MySQL 8.4+, or PostgreSQL 14+
 - A web server that serves only the `public/` directory
 
 ## Install
@@ -73,10 +79,12 @@ The settings that matter:
 
 | Variable | Purpose |
 | --- | --- |
-| `DB_SIMPLY_DB_HOST`, `DB_SIMPLY_DB_PORT` | The server every session connects to. |
-| `DB_SIMPLY_DB_SOCKET` | A Unix socket to use instead of host and port. |
+| `DB_SIMPLY_DB_DRIVER` | `mysql` for MariaDB and MySQL (the default), or `pgsql` for PostgreSQL. |
+| `DB_SIMPLY_DB_HOST`, `DB_SIMPLY_DB_PORT` | The server every session connects to. The port defaults to the driver's own, 3306 or 5432. |
+| `DB_SIMPLY_DB_SOCKET` | A Unix socket to use instead of host and port. For PostgreSQL, the socket's directory, e.g. `/var/run/postgresql`. |
+| `DB_SIMPLY_DB_DATABASE` | PostgreSQL only: the database a session starts in when its sign-on names none. A PostgreSQL connection is to one database, and moving to another reconnects. Default `postgres`. |
 | `DB_SIMPLY_DB_SSL`, `DB_SIMPLY_DB_SSL_CA`, `DB_SIMPLY_DB_SSL_VERIFY` | TLS to the server. |
-| `DB_SIMPLY_HIDDEN_DATABASES` | Databases never listed or opened in the browser, comma separated. Defaults to the system schemas. This tidies the list; it is not access control, see the security notes. |
+| `DB_SIMPLY_HIDDEN_DATABASES` | Databases never listed or opened in the browser, comma separated. Defaults to MariaDB's and MySQL's system schemas; on PostgreSQL set it to `postgres` (template databases and those the role cannot connect to are never listed). This tidies the list; it is not access control, see the security notes. |
 | `DB_SIMPLY_TOKEN_DIR` | Where the control panel drops sign-on tokens. Defaults to `storage/sso-tokens`. |
 | `DB_SIMPLY_TOKEN_TTL` | Seconds a token stays valid. Default 60. |
 | `DB_SIMPLY_SSO_ISSUE_URL` | The panel page `sso.php?start` sends the browser to, for a token bound to it. See below. |
@@ -150,7 +158,7 @@ Without the binding, anyone given a link can open it, and whoever issued it can 
 
 ```sh
 php -S 127.0.0.1:8080 -t public     # with DB_SIMPLY_SESSION_SECURE=false in .env
-php tests/run.php                   # unit tests only; CI also runs them against MariaDB 10.6–11.4 and MySQL 8
+php tests/run.php                   # unit tests only; CI also runs them against MariaDB 10.6–11.4, MySQL 8.4 and PostgreSQL 16–18
 ```
 
 The database tests need a server. They drop every table in the test database, so never point them at one holding data you care about:
@@ -160,6 +168,16 @@ docker run -d --rm --name db-simply-test -p 127.0.0.1:33306:3306 \
     -e MARIADB_ROOT_PASSWORD=root -e MARIADB_DATABASE=dbsimply_test -e MARIADB_USER=tester -e MARIADB_PASSWORD=secret mariadb:11.4
 
 DB_SIMPLY_TEST_HOST=127.0.0.1 DB_SIMPLY_TEST_PORT=33306 DB_SIMPLY_TEST_USER=tester DB_SIMPLY_TEST_PASSWORD=secret php tests/run.php
+```
+
+The PostgreSQL tests read variables of their own, so both servers can be tested in one run. They need a role owning two databases, and recreate the first one's `public` schema:
+
+```sh
+docker run -d --rm --name db-simply-test-pg -p 127.0.0.1:35432:5432 -e POSTGRES_PASSWORD=root postgres:18
+docker exec db-simply-test-pg psql -U postgres -c "CREATE ROLE tester LOGIN PASSWORD 'secret'" \
+    -c 'CREATE DATABASE dbsimply_test OWNER tester' -c 'CREATE DATABASE dbsimply_other OWNER tester'
+
+DB_SIMPLY_TEST_PGSQL_HOST=127.0.0.1 DB_SIMPLY_TEST_PGSQL_PORT=35432 DB_SIMPLY_TEST_PGSQL_USER=tester DB_SIMPLY_TEST_PGSQL_PASSWORD=secret php tests/run.php
 ```
 
 To get a session locally, drop a token into `storage/sso-tokens/` and open `/sso.php?token=…`:
