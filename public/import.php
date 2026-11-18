@@ -60,6 +60,10 @@ try {
 
     $session->release();
 
+    if ($config->get('db.driver') === \DbSimply\Client::PGSQL) {
+        throw new UserError('Importing SQL files is not available on PostgreSQL yet. Use psql or pg_restore.', 400);
+    }
+
     $connect = static function () use ($config, $grant): array {
         $client = (new Connection($config))->open($grant);
         $hidden = $config->get('hidden_databases');

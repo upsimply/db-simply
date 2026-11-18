@@ -1,9 +1,17 @@
 {
     "name": "wpsimply/db-simply",
-    "description": "A small, self-hosted web UI for MariaDB and MySQL with one-time sign-on, built to sit next to a hosting control panel the way phpMyAdmin does.",
+    "description": "A small, self-hosted web UI for MariaDB, MySQL and PostgreSQL with one-time sign-on, built to sit next to a hosting control panel the way phpMyAdmin does.",
     "type": "project",
     "license": "MIT",
-    "keywords": ["mysql", "mariadb", "admin", "gui", "sso", "phpmyadmin"],
+    "keywords": [
+        "mysql",
+        "mariadb",
+        "postgresql",
+        "admin",
+        "gui",
+        "sso",
+        "phpmyadmin"
+    ],
     "homepage": "https://github.com/wpsimply/db-simply",
     "support": {
         "issues": "https://github.com/wpsimply/db-simply/issues",
@@ -13,9 +21,12 @@
         "php": ">=8.3",
         "ext-json": "*",
         "ext-mbstring": "*",
-        "ext-mysqli": "*",
         "ext-session": "*",
         "ext-sodium": "*"
+    },
+    "suggest": {
+        "ext-mysqli": "For MariaDB and MySQL (DB_SIMPLY_DB_DRIVER=mysql).",
+        "ext-pgsql": "For PostgreSQL (DB_SIMPLY_DB_DRIVER=pgsql)."
     },
     "autoload": {
         "psr-4": {

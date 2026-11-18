@@ -222,7 +222,7 @@ document.addEventListener('alpine:init', () => {
             if (!table || !this.tables.some((item) => item.name === table)) {
                 if (tab === 'sql') {
                     this.openSql(null);
-                } else if (tab === 'objects') {
+                } else if (tab === 'objects' && this.can('routines')) {
                     await this.openObjects();
                 } else if (tab === 'search') {
                     this.openSearch();
@@ -897,6 +897,18 @@ document.addEventListener('alpine:init', () => {
             return !this.session.readonly;
         },
 
+        /**
+         * Whether the server offers a feature. Everything is on MariaDB and
+         * MySQL; PostgreSQL leaves out the features written for those alone
+         * (structure editing, SQL dumps and imports, routines, find and
+         * replace, table maintenance). A session from before the list existed
+         * offers everything, as it did.
+         */
+        can(feature) {
+            const features = this.session && this.session.server ? this.session.server.features : undefined;
+            return !Array.isArray(features) || features.includes(feature);
+        },
+
         isView() {
             const current = this.currentTable();
             return Boolean(current && current.view);
@@ -1390,7 +1402,7 @@ document.addEventListener('alpine:init', () => {
         // ---- Structure ------------------------------------------------------
 
         structureEditable() {
-            return this.canWrite() && this.structure !== null && !this.structure.table.view;
+            return this.canWrite() && this.can('structure-editing') && this.structure !== null && !this.structure.table.view;
         },
 
         defaultLength(type) {

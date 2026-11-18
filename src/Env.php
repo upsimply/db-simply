@@ -26,7 +26,9 @@ final class Env
     public const array MAP = [
         'DB_SIMPLY_TITLE' => ['title', 'string'],
         'DB_SIMPLY_PANEL_URL' => ['panel_url', 'string'],
+        'DB_SIMPLY_DB_DRIVER' => ['db.driver', 'string'],
         'DB_SIMPLY_DB_HOST' => ['db.host', 'string'],
+        'DB_SIMPLY_DB_DATABASE' => ['db.database', 'string'],
         'DB_SIMPLY_DB_PORT' => ['db.port', 'int'],
         'DB_SIMPLY_DB_SOCKET' => ['db.socket', 'string'],
         'DB_SIMPLY_DB_TIMEOUT' => ['db.timeout', 'int'],

@@ -56,6 +56,10 @@ try {
 
     switch ($_POST['format'] ?? '') {
         case 'sql':
+            if (! in_array('sql-dump', \DbSimply\Api::features($client), true)) {
+                throw new UserError('SQL dumps are not available on PostgreSQL yet. Export tables as CSV, or use pg_dump.');
+            }
+
             $tables = json_decode((string) ($_POST['tables'] ?? '[]'), true);
 
             if (! is_array($tables)) {

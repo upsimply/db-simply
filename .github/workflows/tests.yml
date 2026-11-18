@@ -23,7 +23,7 @@ jobs:
       - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
         with:
           php-version: '8.5'
-          extensions: mysqli, mbstring, sodium
+          extensions: mysqli, pgsql, mbstring, sodium
           coverage: none
           tools: none
 
@@ -55,8 +55,6 @@ jobs:
           - php: '8.5'
             server: 'mariadb:10.11'
           - php: '8.5'
-            server: 'mysql:8.0'
-          - php: '8.5'
             server: 'mysql:8.4'
 
     services:
@@ -78,7 +76,7 @@ jobs:
       - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
         with:
           php-version: ${{ matrix.php }}
-          extensions: mysqli, mbstring, sodium
+          extensions: mysqli, pgsql, mbstring, sodium
           coverage: none
           tools: none
 
@@ -108,3 +106,56 @@ jobs:
           DB_SIMPLY_TEST_USER: tester
           DB_SIMPLY_TEST_PASSWORD: secret
           DB_SIMPLY_TEST_DATABASE: dbsimply_test
+
+  postgres:
+    name: PHP 8.5 · ${{ matrix.server }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        server: ['postgres:16', 'postgres:17', 'postgres:18']
+
+    services:
+      database:
+        image: ${{ matrix.server }}
+        ports:
+          - 5432:5432
+        env:
+          POSTGRES_PASSWORD: root
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+        with:
+          php-version: '8.5'
+          extensions: pgsql, mbstring, sodium
+          coverage: none
+          tools: none
+
+      - name: Wait for the database
+        run: |
+          for i in $(seq 1 60); do
+            PGPASSWORD=root pg_isready -h 127.0.0.1 -U postgres && exit 0
+            sleep 2
+          done
+          echo "The database did not come up." >&2
+          exit 1
+
+      # A role owning two databases, as an account's main role does on a server.
+      - name: Create the test role and databases
+        env:
+          PGPASSWORD: root
+        run: |
+          psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 \
+            -c "CREATE ROLE tester LOGIN PASSWORD 'secret'" \
+            -c 'CREATE DATABASE dbsimply_test OWNER tester' \
+            -c 'CREATE DATABASE dbsimply_other OWNER tester'
+
+      - name: Integration tests
+        run: php tests/run.php
+        env:
+          DB_SIMPLY_TEST_PGSQL_HOST: 127.0.0.1
+          DB_SIMPLY_TEST_PGSQL_PORT: 5432
+          DB_SIMPLY_TEST_PGSQL_USER: tester
+          DB_SIMPLY_TEST_PGSQL_PASSWORD: secret

@@ -143,11 +143,11 @@ $asset = static fn (string $path): string => $path.'?v='.rawurlencode($version);
                     <div class="menu" x-data="{ open: false }" @click.outside="open = false">
                         <button type="button" class="button small" @click="open = !open" :disabled="busy">Export</button>
                         <div class="menu-items right" x-show="open" x-transition.opacity @click="open = false">
-                            <button type="button" @click="openExport([table])">SQL dump of this table…</button>
+                            <button type="button" @click="openExport([table])" x-show="can('sql-dump')">SQL dump of this table…</button>
                             <button type="button" @click="exportCsv()" x-text="appliedFilters.length || appliedSearch ? 'CSV of the matching rows' : 'CSV of all rows'"></button>
                         </div>
                     </div>
-                    <div class="menu" x-data="{ open: false }" @click.outside="open = false" x-show="canWrite()">
+                    <div class="menu" x-data="{ open: false }" @click.outside="open = false" x-show="canWrite() && can('table-operations')">
                         <button type="button" class="button small" @click="open = !open" :disabled="busy">Operations</button>
                         <div class="menu-items right" x-show="open" x-transition.opacity @click="open = false">
                             <button type="button" @click="openRename()">Rename…</button>
@@ -171,7 +171,7 @@ $asset = static fn (string $path): string => $path.'?v='.rawurlencode($version);
                 <div class="head-row" x-show="!table">
                     <div class="tabs" role="tablist">
                         <button type="button" role="tab" :aria-selected="tab === 'tables'" @click="openOverview()">Tables</button>
-                        <button type="button" role="tab" :aria-selected="tab === 'objects'" @click="openObjects()">Routines &amp; events</button>
+                        <button type="button" role="tab" :aria-selected="tab === 'objects'" @click="openObjects()" x-show="can('routines')">Routines &amp; events</button>
                         <button type="button" role="tab" :aria-selected="tab === 'search'" @click="openSearch()">Search</button>
                         <button type="button" role="tab" :aria-selected="tab === 'sql'" @click="openSql(null)">SQL</button>
                     </div>
@@ -179,10 +179,10 @@ $asset = static fn (string $path): string => $path.'?v='.rawurlencode($version);
                 <div class="head-row" x-show="!table && tab === 'tables'">
                     <span class="muted small" x-text="tableSelection.length ? tableSelection.length + ' selected' : 'Select tables to act on several at once.'"></span>
                     <span class="spacer"></span>
-                    <button type="button" class="button small" @click="openCreateTable()" x-show="canWrite()" :disabled="busy">New table…</button>
-                    <button type="button" class="button small" @click="openImport()" x-show="canWrite()" :disabled="busy">Import…</button>
-                    <button type="button" class="button small" @click="openExport(tableSelection)" :disabled="busy || tables.length === 0" x-text="tableSelection.length ? 'Export selected…' : 'Export…'"></button>
-                    <div class="menu" x-data="{ open: false }" @click.outside="open = false" x-show="canWrite()">
+                    <button type="button" class="button small" @click="openCreateTable()" x-show="canWrite() && can('structure-editing')" :disabled="busy">New table…</button>
+                    <button type="button" class="button small" @click="openImport()" x-show="canWrite() && can('import')" :disabled="busy">Import…</button>
+                    <button type="button" class="button small" @click="openExport(tableSelection)" x-show="can('sql-dump')" :disabled="busy || tables.length === 0" x-text="tableSelection.length ? 'Export selected…' : 'Export…'"></button>
+                    <div class="menu" x-data="{ open: false }" @click.outside="open = false" x-show="canWrite() && can('table-operations')">
                         <button type="button" class="button small" @click="open = !open" :disabled="busy || tableSelection.length === 0">With selected</button>
                         <div class="menu-items right" x-show="open" x-transition.opacity @click="open = false">
                             <button type="button" @click="maintain(tableSelection, 'optimize')">Optimize</button>
@@ -388,7 +388,7 @@ $asset = static fn (string $path): string => $path.'?v='.rawurlencode($version);
             <div x-show="db && !table && tab === 'search'" class="search-db">
                 <div class="tabs mode-tabs" role="tablist" x-show="canWrite()">
                     <button type="button" role="tab" :aria-selected="searchMode === 'find'" @click="searchMode = 'find'">Find</button>
-                    <button type="button" role="tab" :aria-selected="searchMode === 'replace'" @click="searchMode = 'replace'">Find and replace</button>
+                    <button type="button" role="tab" :aria-selected="searchMode === 'replace'" @click="searchMode = 'replace'" x-show="can('replace')">Find and replace</button>
                 </div>
 
                 <template x-if="searchMode === 'find'">

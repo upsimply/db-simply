@@ -4,14 +4,13 @@ declare(strict_types=1);
 
 namespace DbSimply;
 
-use mysqli_sql_exception;
-
 /**
  * Reads one row in full for editing, and inserts, updates and deletes rows.
  *
  * An existing row is only ever reached through its {@see RowKey}, and every
- * change touches at most one row per key: an UPDATE or DELETE carries
- * LIMIT 1 on top of a condition that can match one row only. Values are
+ * change touches at most one row per key: an UPDATE or DELETE carries a
+ * condition that can match one row only, and LIMIT 1 on top of it where the
+ * server has one (MariaDB and MySQL; PostgreSQL does not). Values are
  * written exactly as given -- null is NULL, and a column left out of an
  * insert gets its default -- and generated columns are never written.
  */
@@ -24,10 +23,11 @@ final class Editor
         'geometry', 'point', 'linestring', 'polygon', 'multipoint', 'multilinestring', 'multipolygon', 'geometrycollection',
     ];
 
-    private const array LONG_TYPES = ['text', 'mediumtext', 'longtext', 'json', 'blob', 'mediumblob', 'longblob'];
+    private const array LONG_TYPES = ['text', 'mediumtext', 'longtext', 'json', 'blob', 'mediumblob', 'longblob', 'jsonb', 'bytea', 'xml'];
 
     private const array NUMERIC_TYPES = [
         'tinyint', 'smallint', 'mediumint', 'int', 'integer', 'bigint', 'decimal', 'numeric', 'float', 'double', 'real', 'year', 'bit',
+        'double precision',
     ];
 
     public function __construct(
@@ -55,7 +55,9 @@ final class Editor
             'numeric' => in_array($column['dataType'], self::NUMERIC_TYPES, true),
             'binary' => in_array($column['dataType'], self::BINARY_TYPES, true),
             'long' => in_array($column['dataType'], self::LONG_TYPES, true),
-            'options' => in_array($column['dataType'], ['enum', 'set'], true) ? self::options($column['type']) : null,
+            // MariaDB and MySQL spell the allowed values in the type itself;
+            // a PostgreSQL enum is a type of its own and is edited as text.
+            'options' => preg_match('/^(enum|set)\(/i', $column['type']) === 1 ? self::options($column['type']) : null,
             'comment' => $column['comment'],
         ], $this->catalog->columns($database, $table));
     }
@@ -74,15 +76,17 @@ final class Editor
         $select = [];
 
         foreach ($fields as $field) {
-            $quoted = Identifier::quote($field['name']);
-            $select[] = $field['dataType'] === 'bit' ? $quoted.' + 0' : sprintf('LEFT(%s, %d)', $quoted, $this->valuePreview + 1);
-            $select[] = sprintf('OCTET_LENGTH(%s)', $quoted);
+            $quoted = $this->client->identifier($field['name']);
+            $select[] = $this->isBit($field)
+                ? $quoted.' + 0'
+                : $this->client->previewExpression($quoted, $this->valuePreview + 1, $field['dataType']);
+            $select[] = $this->client->lengthExpression($quoted, $field['dataType']);
         }
 
         $rows = $this->client->selectRows(sprintf(
             'SELECT %s FROM %s WHERE %s LIMIT 2',
             implode(', ', $select),
-            Identifier::qualified($database, $table),
+            $this->client->qualified($database, $table),
             $rowKey->where($this->client, $key),
         ));
 
@@ -96,7 +100,7 @@ final class Editor
             $value = $rows[0][$index * 2];
             $length = $rows[0][$index * 2 + 1];
             [$preview, $cut] = Codec::preview($value, $this->valuePreview);
-            $values[$field['name']] = Codec::cell($preview, $field['dataType'] === 'bit' ? null : ($length === null ? $cut : (int) $length));
+            $values[$field['name']] = Codec::cell($preview, $this->isBit($field) ? null : ($length === null ? $cut : (int) $length));
         }
 
         return ['fields' => $fields, 'values' => $values, 'key' => $rowKey->columns];
@@ -111,20 +115,37 @@ final class Editor
     public function insert(string $database, string $table, mixed $values): array
     {
         $assignments = $this->assignments($database, $table, $values);
+        $qualified = $this->client->qualified($database, $table);
 
         $sql = $assignments === []
-            ? sprintf('INSERT INTO %s () VALUES ()', Identifier::qualified($database, $table))
+            ? $this->client->insertDefaults($qualified)
             : sprintf(
                 'INSERT INTO %s (%s) VALUES (%s)',
-                Identifier::qualified($database, $table),
+                $qualified,
                 implode(', ', array_keys($assignments)),
                 implode(', ', $assignments),
             );
 
-        $this->client->query($sql);
-        $insertId = $this->client->mysqli()->insert_id;
+        // PostgreSQL keeps no "last insert id": the generated value is asked
+        // for with the INSERT itself, from the one auto-increment column.
+        if ($this->client instanceof PgsqlClient) {
+            $generated = array_values(array_filter(
+                $this->catalog->columns($database, $table),
+                static fn (array $column): bool => stripos($column['extra'], 'auto_increment') !== false || stripos($column['extra'], 'identity') !== false,
+            ));
 
-        return ['insertId' => $insertId ? (string) $insertId : null];
+            if (count($generated) === 1) {
+                return ['insertId' => $this->client->insertReturning($sql.' RETURNING '.$this->client->identifier($generated[0]['name']))];
+            }
+
+            $this->client->statement($sql);
+
+            return ['insertId' => null];
+        }
+
+        $this->client->statement($sql);
+
+        return ['insertId' => $this->client->insertId()];
     }
 
     /**
@@ -143,7 +164,7 @@ final class Editor
             return ['changed' => 0];
         }
 
-        $from = Identifier::qualified($database, $table);
+        $from = $this->client->qualified($database, $table);
 
         // The row may have gone since the form was opened: say so, rather
         // than reporting a change to nothing as a success.
@@ -151,14 +172,15 @@ final class Editor
             throw new UserError('That row no longer exists.', 404);
         }
 
-        $this->client->query(sprintf(
-            'UPDATE %s SET %s WHERE %s LIMIT 1',
+        $changed = $this->client->statement(sprintf(
+            'UPDATE %s SET %s WHERE %s%s',
             $from,
             implode(', ', array_map(static fn (string $column, string $value): string => $column.' = '.$value, array_keys($assignments), $assignments)),
             $where,
+            $this->client->limitOne(),
         ));
 
-        return ['changed' => max(0, (int) $this->client->mysqli()->affected_rows)];
+        return ['changed' => $changed];
     }
 
     /**
@@ -174,27 +196,21 @@ final class Editor
         }
 
         $rowKey = RowKey::of($this->catalog, $database, $table);
-        $from = Identifier::qualified($database, $table);
+        $from = $this->client->qualified($database, $table);
         $conditions = array_map(fn (mixed $key): string => $rowKey->where($this->client, $key), $keys);
 
-        $mysqli = $this->client->mysqli();
         $deleted = 0;
 
-        $this->client->query('START TRANSACTION');
+        $this->client->statement('START TRANSACTION');
 
         try {
             foreach ($conditions as $where) {
-                $mysqli->query(sprintf('DELETE FROM %s WHERE %s LIMIT 1', $from, $where));
-                $deleted += max(0, (int) $mysqli->affected_rows);
+                $deleted += $this->client->statement(sprintf('DELETE FROM %s WHERE %s%s', $from, $where, $this->client->limitOne()));
             }
 
-            $this->client->query('COMMIT');
-        } catch (mysqli_sql_exception $e) {
-            $this->client->query('ROLLBACK');
-
-            throw new UserError($e->getMessage());
+            $this->client->statement('COMMIT');
         } catch (UserError $e) {
-            $this->client->query('ROLLBACK');
+            $this->client->statement('ROLLBACK');
 
             throw $e;
         }
@@ -232,14 +248,26 @@ final class Editor
 
             // A string is not a number to a BIT column: '1' would store the
             // byte 0x31. As a number it stores what was meant.
-            if ($bytes !== null && $column['dataType'] === 'bit') {
+            if ($bytes !== null && $this->isBit($column)) {
                 $sql = sprintf('CAST(%s AS UNSIGNED)', $sql);
             }
 
-            $assignments[Identifier::quote($name)] = $sql;
+            $assignments[$this->client->identifier($name)] = $sql;
         }
 
         return $assignments;
+    }
+
+    /**
+     * A MariaDB or MySQL BIT column, whose values are bytes on the wire and
+     * are read and written as numbers instead. PostgreSQL's bit strings are
+     * text already.
+     *
+     * @param  array{dataType: string}  $column
+     */
+    private function isBit(array $column): bool
+    {
+        return $column['dataType'] === 'bit' && ! $this->client->isPostgres();
     }
 
     /**
